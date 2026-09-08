@@ -170,6 +170,7 @@
         <td>${Utils.escapeHtml(r.petugas||'-')}</td>
         <td class="text-nowrap">
           <button class="btn btn-sm btn-outline-navy me-1" data-act="lihat" data-id="${r.id}"><i class="fa-solid fa-eye"></i></button>
+          <button class="btn btn-sm btn-soft-info me-1" data-act="edit" data-id="${r.id}"><i class="fa-solid fa-pen"></i></button>
           <button class="btn btn-sm btn-soft-danger" data-act="delete" data-id="${r.id}"><i class="fa-solid fa-trash"></i></button>
         </td>
       </tr>`;
@@ -179,6 +180,7 @@
       btn.onclick = async () => {
         const row = rows.find(r=>r.id===btn.dataset.id);
         if(btn.dataset.act==="lihat") return lihatSetoran(row);
+        if(btn.dataset.act==="edit") return openSetoranForm(onChanged, row);
         const ok = await Utils.confirmDelete("catatan setoran ini");
         if(!ok) return;
         await Api.remove("setoran_hafalan", row.id);
@@ -208,29 +210,34 @@
     });
   }
 
-  async function openSetoranForm(onSaved){
+  async function openSetoranForm(onSaved, existingRecord){
+    const isEdit = !!existingRecord;
     const bank = await Api.list("kosakata");
     if(!bank.length){ Utils.toast("error","Tambahkan kosakata ke Bank Kosakata terlebih dahulu"); return; }
+    let existingKataIds = [];
+    if(isEdit){ try{ existingKataIds = JSON.parse(existingRecord.kosakataIds||"[]"); }catch(e){} }
 
     const result = await Swal.fire({
-      title:"Tambah Setoran Hafalan", width:560, showCancelButton:true,
-      confirmButtonColor:"#0a2540", confirmButtonText:"Simpan", cancelButtonText:"Batal",
+      title: isEdit ? "Edit Setoran Hafalan" : "Tambah Setoran Hafalan", width:560, showCancelButton:true,
+      confirmButtonColor:"#0a2540", confirmButtonText: isEdit ? "Simpan Perubahan" : "Simpan", cancelButtonText:"Batal",
       html:`<div class="row g-3 text-start">
-        <div class="col-6"><label class="form-label-mbms">Tanggal</label><input type="date" id="f_tgl" class="form-control form-control-mbms" style="padding-left:16px" value="${luxon.DateTime.now().toISODate()}"></div>
-        <div class="col-6"><label class="form-label-mbms">Siswa</label><select id="f_siswa" class="form-select form-control-mbms" style="padding-left:16px">${Cache.allSiswa().map(s=>`<option value="${s.id}">${s.nama}</option>`).join("")}</select></div>
+        <div class="col-6"><label class="form-label-mbms">Tanggal</label><input type="date" id="f_tgl" class="form-control form-control-mbms" style="padding-left:16px" value="${existingRecord?.tanggal || luxon.DateTime.now().toISODate()}"></div>
+        <div class="col-6"><label class="form-label-mbms">Siswa</label><select id="f_siswa" class="form-select form-control-mbms" style="padding-left:16px">${Cache.allSiswa().map(s=>`<option value="${s.id}" ${existingRecord?.siswaId===s.id?'selected':''}>${s.nama}</option>`).join("")}</select></div>
         <div class="col-12">
           <label class="form-label-mbms">Kata yang Disetorkan (jumlah bebas, biasanya 3 kata/hari)</label>
           <div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:10px">
             ${bank.map(k=>`<div class="form-check">
-              <input class="form-check-input" type="checkbox" value="${k.id}" id="kw_${k.id}">
+              <input class="form-check-input" type="checkbox" value="${k.id}" id="kw_${k.id}" ${existingKataIds.includes(k.id)?'checked':''}>
               <label class="form-check-label" for="kw_${k.id}" style="font-size:13px">${Utils.escapeHtml(k.kataIndonesia)} <span class="text-muted">(${Utils.escapeHtml(k.kategori||'-')})</span></label>
             </div>`).join("")}
           </div>
         </div>
         <div class="col-6"><label class="form-label-mbms">Nilai</label><select id="f_nilai" class="form-select form-control-mbms" style="padding-left:16px">
-          <option>Lancar</option><option>Cukup</option><option>Perlu Bimbingan</option></select></div>
-        <div class="col-6"><label class="form-label-mbms">Petugas</label><input id="f_petugas" class="form-control form-control-mbms" style="padding-left:16px" value="${Session.get().nama}"></div>
-        <div class="col-12"><label class="form-label-mbms">Catatan (opsional)</label><input id="f_catatan" class="form-control form-control-mbms" style="padding-left:16px"></div>
+          <option ${existingRecord?.nilai==='Lancar'?'selected':''}>Lancar</option>
+          <option ${existingRecord?.nilai==='Cukup'?'selected':''}>Cukup</option>
+          <option ${existingRecord?.nilai==='Perlu Bimbingan'?'selected':''}>Perlu Bimbingan</option></select></div>
+        <div class="col-6"><label class="form-label-mbms">Petugas</label><input id="f_petugas" class="form-control form-control-mbms" style="padding-left:16px" value="${existingRecord?.petugas || Session.get().nama}"></div>
+        <div class="col-12"><label class="form-label-mbms">Catatan (opsional)</label><input id="f_catatan" class="form-control form-control-mbms" style="padding-left:16px" value="${existingRecord?.catatan||''}"></div>
       </div>`,
       preConfirm: () => {
         const kosakataIds = bank.filter(k => document.getElementById(`kw_${k.id}`)?.checked).map(k=>k.id);
@@ -246,9 +253,14 @@
       }
     });
     if(!result.isConfirmed) return;
-    await Api.create("setoran_hafalan", result.value);
-    Auth.logAudit("CREATE", `Setoran hafalan ${Cache.siswaName(result.value.siswaId)}`);
-    Utils.toast("success","Setoran hafalan disimpan");
+    if(isEdit){
+      await Api.update("setoran_hafalan", existingRecord.id, result.value);
+      Auth.logAudit("UPDATE", `Mengubah setoran hafalan ${Cache.siswaName(result.value.siswaId)}`);
+    }else{
+      await Api.create("setoran_hafalan", result.value);
+      Auth.logAudit("CREATE", `Setoran hafalan ${Cache.siswaName(result.value.siswaId)}`);
+    }
+    Utils.toast("success", isEdit ? "Perubahan setoran disimpan" : "Setoran hafalan disimpan");
     onSaved();
   }
 
