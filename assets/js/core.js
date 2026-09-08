@@ -83,11 +83,18 @@ const Utils = (() => {
 
 /* ---------------------------- Data cache (siswa & kamar lookups) ---------- */
 const Cache = (() => {
-  let siswaMap = {}, kamarMap = {};
+  let siswaMap = {}, kamarMap = {}, kelasList = [];
   async function refresh(){
     const [siswa, kamar] = await Promise.all([Api.list("siswa"), Api.list("kamar")]);
     siswaMap = Object.fromEntries(siswa.map(s=>[s.id,s]));
     kamarMap = Object.fromEntries(kamar.map(k=>[k.id,k]));
+    try{
+      const kelas = await Api.list("kelas");
+      kelasList = kelas.sort((a,b)=>Number(a.urutan||0)-Number(b.urutan||0));
+    }catch(e){
+      console.warn("Tabel 'kelas' belum tersedia — jalankan ulang supabase/schema.sql untuk mengaktifkan fitur Kelola Kelas.", e);
+      kelasList = [];
+    }
   }
   const siswaName = id => siswaMap[id]?.nama || "—";
   const siswaObj = id => siswaMap[id] || null;
@@ -95,7 +102,8 @@ const Cache = (() => {
   const kamarObj = id => kamarMap[id] || null;
   const allSiswa = () => Object.values(siswaMap);
   const allKamar = () => Object.values(kamarMap);
-  return { refresh, siswaName, siswaObj, kamarName, kamarObj, allSiswa, allKamar };
+  const allKelas = () => kelasList;
+  return { refresh, siswaName, siswaObj, kamarName, kamarObj, allSiswa, allKamar, allKelas };
 })();
 
 /* ---------------------------- Sidebar -------------------------------------- */
