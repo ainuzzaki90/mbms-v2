@@ -7,10 +7,7 @@
   const FORM_FIELDS = [
     { name:"nis", label:"NIS", col:4, required:true },
     { name:"nama", label:"Nama Lengkap", col:8, required:true },
-    { name:"kelas", label:"Kelas", col:4, type:"select", required:true, options:[
-      {value:"VII A",label:"VII A"},{value:"VII B",label:"VII B"},
-      {value:"VIII A",label:"VIII A"},{value:"VIII B",label:"VIII B"},
-      {value:"IX A",label:"IX A"},{value:"IX B",label:"IX B"} ] },
+    { name:"kelas", label:"Kelas", col:4, type:"select", required:true, options:()=>Cache.allKelas().map(k=>({value:k.nama,label:k.nama})) },
     { name:"jk", label:"Jenis Kelamin", col:4, type:"select", required:true, options:[{value:"L",label:"Laki-laki"},{value:"P",label:"Perempuan"}] },
     { name:"kamarId", label:"Kamar", col:4, type:"select", required:true, options:()=>Cache.allKamar().map(k=>({value:k.id,label:k.nama})) },
     { name:"tglLahir", label:"Tanggal Lahir", col:6, type:"date" },
@@ -30,6 +27,7 @@
           <div><h3><i class="fa-solid fa-user-graduate" style="color:var(--gold);margin-right:8px"></i>Data Siswa</h3>
           <p>Kelola profil, kamar, dan riwayat siswa asrama</p></div>
           <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-navy" id="btnKelolaKelas"><i class="fa-solid fa-list-ul me-1"></i>Kelola Kelas</button>
             <button class="btn btn-outline-navy" id="btnImportExcel"><i class="fa-solid fa-file-import me-1"></i>Import Excel</button>
             <button class="btn btn-outline-navy" id="btnExportExcel"><i class="fa-solid fa-file-export me-1"></i>Export Excel</button>
             <button class="btn btn-navy" id="btnAddSiswa"><i class="fa-solid fa-plus me-1"></i>Tambah Siswa</button>
@@ -89,6 +87,7 @@
     }
 
     document.getElementById("btnAddSiswa").onclick = () => openSiswaForm(null, reload);
+    document.getElementById("btnKelolaKelas").onclick = () => openKelolaKelas(async () => { await Cache.refresh(); reload(); });
     document.getElementById("btnExportExcel").onclick = () => Reports.exportExcel(siswa.map(s=>({
       NIS:s.nis, Nama:s.nama, Kelas:s.kelas, JK:s.jk, Kamar:Cache.kamarName(s.kamarId), Status:s.status, OrangTua:s.ortu, HP:s.hpOrtu,
     })), "Data_Siswa_MBMS");
@@ -99,7 +98,7 @@
       let count = 0;
       for(const r of rows){
         await Api.create("siswa", {
-          nis: String(r.NIS||r.nis||""), nama: r.Nama||r.nama||"", kelas: r.Kelas||r.kelas||"VII A",
+          nis: String(r.NIS||r.nis||""), nama: r.Nama||r.nama||"", kelas: r.Kelas||r.kelas||Cache.allKelas()[0]?.nama||"",
           jk: r.JK||r.jk||"L", kamarId: Cache.allKamar()[0]?.id||"", status:"Aktif",
           tglLahir:"", alamat:r.Alamat||"", ortu:r.OrangTua||"", hpOrtu:r.HP||"",
         });
@@ -202,6 +201,74 @@
         }
       }
     });
+  }
+
+  /* ---------------- Kelola Kelas (manage the list of classes) ------------ */
+  async function openKelolaKelas(onChanged){
+    const render = async () => {
+      const list = (await Api.list("kelas")).sort((a,b)=>Number(a.urutan||0)-Number(b.urutan||0));
+      return `<div class="text-start">
+        <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Tambah, ubah, atau hapus kelas yang tersedia di seluruh aplikasi (form Data Siswa, dsb).</p>
+        <div id="kelasList" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px">
+          ${list.map(k=>`<div class="d-flex align-items-center gap-2 mb-2 p-2" style="background:var(--bg);border-radius:8px" data-kelas-id="${k.id}">
+            <span style="flex:1;font-size:13px;font-weight:600;color:var(--navy)">${Utils.escapeHtml(k.nama)}</span>
+            <button class="btn btn-sm btn-soft-info py-0 px-2" data-kelas-edit="${k.id}"><i class="fa-solid fa-pen" style="font-size:10px"></i></button>
+            <button class="btn btn-sm btn-soft-danger py-0 px-2" data-kelas-del="${k.id}"><i class="fa-solid fa-trash" style="font-size:10px"></i></button>
+          </div>`).join("") || `<p class="text-muted mb-0" style="font-size:12px;padding:8px">Belum ada kelas. Tambahkan di bawah.</p>`}
+        </div>
+        <div class="d-flex gap-2 mt-3">
+          <input type="text" id="kelasInput" class="form-control form-control-mbms" style="padding-left:16px" placeholder="mis. VII C, X A, dst">
+          <button class="btn btn-navy text-nowrap" id="kelasAdd"><i class="fa-solid fa-plus me-1"></i>Tambah</button>
+        </div>
+      </div>`;
+    };
+
+    const wire = async () => {
+      document.getElementById("kelasAdd").onclick = async () => {
+        const nama = document.getElementById("kelasInput").value.trim();
+        if(!nama) return;
+        const existing = await Api.list("kelas");
+        if(existing.some(k=>k.nama.toLowerCase()===nama.toLowerCase())){ Utils.toast("error","Kelas itu sudah ada"); return; }
+        await Api.create("kelas", { nama, urutan: existing.length + 1 });
+        Utils.toast("success","Kelas ditambahkan");
+        refresh();
+      };
+      document.querySelectorAll("[data-kelas-edit]").forEach(btn=>{
+        btn.onclick = async () => {
+          const list = await Api.list("kelas");
+          const k = list.find(x=>x.id===btn.dataset.kelasEdit);
+          const result = await Swal.fire({
+            title:"Edit Nama Kelas", input:"text", inputValue:k.nama,
+            showCancelButton:true, confirmButtonText:"Simpan", cancelButtonText:"Batal", confirmButtonColor:"#0a2540",
+          });
+          if(!result.isConfirmed || !result.value.trim()) return;
+          await Api.update("kelas", k.id, { nama: result.value.trim() });
+          Utils.toast("success","Kelas diperbarui — data siswa lama dengan nama kelas sebelumnya perlu disesuaikan manual bila perlu");
+          refresh();
+        };
+      });
+      document.querySelectorAll("[data-kelas-del]").forEach(btn=>{
+        btn.onclick = async () => {
+          const ok = await Utils.confirmDelete("kelas ini (siswa yang masih memakai kelas ini tidak akan otomatis berubah)");
+          if(!ok) return;
+          await Api.remove("kelas", btn.dataset.kelasDel);
+          Utils.toast("success","Kelas dihapus");
+          refresh();
+        };
+      });
+    };
+
+    const refresh = async () => {
+      Swal.update({ html: await render() });
+      wire();
+    };
+
+    await Swal.fire({
+      title:"Kelola Kelas", width:480, html: await render(),
+      confirmButtonText:"Tutup", confirmButtonColor:"#0a2540",
+      didOpen: wire,
+    });
+    onChanged();
   }
 
   Router.register("siswa", render);
