@@ -33,6 +33,15 @@ const MOCK_SEED = {
     { id: "K-06", nama: "Kamar Aisyah", gedung: "Asrama Putri", lantai: 1, kapasitas: 6, jk: "P" },
   ],
 
+  kelas: [
+    { id: "KL-01", nama: "VII A", urutan: 1 },
+    { id: "KL-02", nama: "VII B", urutan: 2 },
+    { id: "KL-03", nama: "VIII A", urutan: 3 },
+    { id: "KL-04", nama: "VIII B", urutan: 4 },
+    { id: "KL-05", nama: "IX A", urutan: 5 },
+    { id: "KL-06", nama: "IX B", urutan: 6 },
+  ],
+
   presensi: [
     { id: "P-0001", tanggal: "2026-07-21", siswaId: "S-0001", bangun: "Hadir", sholat: "Hadir", mengaji: "Hadir", sekolah: "Hadir", tidur: "Hadir", keterangan: "" },
     { id: "P-0002", tanggal: "2026-07-21", siswaId: "S-0002", bangun: "Hadir", sholat: "Hadir", mengaji: "Alpa", sekolah: "Hadir", tidur: "Hadir", keterangan: "Terlambat bangun" },
