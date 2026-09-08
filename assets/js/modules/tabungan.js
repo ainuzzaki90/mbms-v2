@@ -21,6 +21,25 @@
       .reduce((bal,r)=> bal + (r.jenis==="Setoran" ? Number(r.jumlah||0) : -Number(r.jumlah||0)), 0);
   }
 
+  /**
+   * Recomputes and persists the running `saldoSetelah` snapshot for every
+   * transaction of a student, in chronological order. Called after any
+   * edit/delete so the passbook stays internally consistent even when a
+   * PAST transaction (not just the most recent one) is modified.
+   */
+  async function recomputeBalances(siswaId){
+    const rows = (await Api.list("tabungan", { filter:{ siswaId } }))
+      .sort((a,b)=> a.tanggal.localeCompare(b.tanggal) || String(a.id).localeCompare(String(b.id)));
+    let bal = 0;
+    for(const r of rows){
+      bal += (r.jenis === "Setoran" ? Number(r.jumlah||0) : -Number(r.jumlah||0));
+      if(Number(r.saldoSetelah) !== bal){
+        await Api.update("tabungan", r.id, { saldoSetelah: bal });
+      }
+    }
+    return bal;
+  }
+
   async function render(container){
     await Cache.refresh();
     const rows = await Api.list("tabungan");
@@ -86,7 +105,7 @@
       </tr>`).join("") || `<tr><td colspan="6" class="text-center text-muted py-4">Belum ada data siswa</td></tr>`;
 
       document.querySelectorAll("#saldoTable [data-act]").forEach(btn=>{
-        btn.onclick = () => openPassbook(btn.dataset.id, data);
+        btn.onclick = () => openPassbook(btn.dataset.id, reload);
       });
       dt = null;
       if(siswaRows.length){
@@ -94,7 +113,7 @@
       }
     }
 
-    document.getElementById("btnAddTx").onclick = () => openTxForm(null, async ()=>{ await reload(); render(container); });
+    document.getElementById("btnAddTx").onclick = () => openTxForm(null, null, async ()=>{ await reload(); render(container); });
     reload();
   }
 
@@ -113,68 +132,85 @@
     });
   }
 
-  async function openTxForm(preSelectSiswaId, onSaved){
+  async function openTxForm(preSelectSiswaId, existingRecord, onSaved){
+    const isEdit = !!existingRecord;
     const allRows = await Api.list("tabungan");
+    const siswaIdLocked = existingRecord?.siswaId || preSelectSiswaId;
+    // Balance excluding the transaction being edited (so its own old amount doesn't double-count).
+    const baseBalance = isEdit
+      ? computeBalance(allRows.filter(r=>r.id!==existingRecord.id), siswaIdLocked)
+      : computeBalance(allRows, siswaIdLocked);
+
     const result = await Swal.fire({
-      title:"Tambah Transaksi Tabungan", width:520, showCancelButton:true,
-      confirmButtonColor:"#0a2540", confirmButtonText:"Simpan", cancelButtonText:"Batal",
+      title: isEdit ? "Edit Transaksi Tabungan" : "Tambah Transaksi Tabungan", width:520, showCancelButton:true,
+      confirmButtonColor:"#0a2540", confirmButtonText: isEdit ? "Simpan Perubahan" : "Simpan", cancelButtonText:"Batal",
       html:`<div class="row g-3 text-start">
         <div class="col-12"><label class="form-label-mbms">Siswa</label>
-          <select id="f_siswa" class="form-select form-control-mbms" style="padding-left:16px">
-          ${Cache.allSiswa().map(s=>`<option value="${s.id}" ${preSelectSiswaId===s.id?'selected':''}>${s.nama} (${s.kelas})</option>`).join("")}
+          <select id="f_siswa" class="form-select form-control-mbms" style="padding-left:16px" ${isEdit?'disabled':''}>
+          ${Cache.allSiswa().map(s=>`<option value="${s.id}" ${siswaIdLocked===s.id?'selected':''}>${s.nama} (${s.kelas})</option>`).join("")}
           </select></div>
         <div class="col-6"><label class="form-label-mbms">Jenis Transaksi</label>
           <select id="f_jenis" class="form-select form-control-mbms" style="padding-left:16px">
-            <option value="Setoran">Setoran</option><option value="Penarikan">Penarikan</option>
+            <option value="Setoran" ${existingRecord?.jenis==='Setoran'?'selected':''}>Setoran</option>
+            <option value="Penarikan" ${existingRecord?.jenis==='Penarikan'?'selected':''}>Penarikan</option>
           </select></div>
-        <div class="col-6"><label class="form-label-mbms">Tanggal</label><input type="date" id="f_tgl" class="form-control form-control-mbms" style="padding-left:16px" value="${luxon.DateTime.now().toISODate()}"></div>
-        <div class="col-12"><label class="form-label-mbms">Jumlah (Rp)</label><input type="number" id="f_jml" class="form-control form-control-mbms" style="padding-left:16px" min="0"></div>
-        <div class="col-12"><label class="form-label-mbms">Keterangan</label><input id="f_ket" class="form-control form-control-mbms" style="padding-left:16px" placeholder="mis. Setoran orang tua, beli alat mandi, dll"></div>
+        <div class="col-6"><label class="form-label-mbms">Tanggal</label><input type="date" id="f_tgl" class="form-control form-control-mbms" style="padding-left:16px" value="${existingRecord?.tanggal || luxon.DateTime.now().toISODate()}"></div>
+        <div class="col-12"><label class="form-label-mbms">Jumlah (Rp)</label><input type="number" id="f_jml" class="form-control form-control-mbms" style="padding-left:16px" min="0" value="${existingRecord?.jumlah||''}"></div>
+        <div class="col-12"><label class="form-label-mbms">Keterangan</label><input id="f_ket" class="form-control form-control-mbms" style="padding-left:16px" placeholder="mis. Setoran orang tua, beli alat mandi, dll" value="${existingRecord?.keterangan||''}"></div>
         <div class="col-12" id="saldoHint" style="font-size:12px;color:var(--muted)"></div>
       </div>`,
       didOpen: () => {
         const updateHint = () => {
-          const sid = document.getElementById("f_siswa").value;
-          const saldo = computeBalance(allRows, sid);
-          document.getElementById("saldoHint").innerHTML = `Saldo saat ini: <b style="color:var(--navy)">${Utils.fmtCurrency(saldo)}</b>`;
+          document.getElementById("saldoHint").innerHTML = isEdit
+            ? `Saldo sebelum transaksi ini (tidak termasuk transaksi yang sedang diedit): <b style="color:var(--navy)">${Utils.fmtCurrency(baseBalance)}</b>`
+            : `Saldo saat ini: <b style="color:var(--navy)">${Utils.fmtCurrency(baseBalance)}</b>`;
         };
-        document.getElementById("f_siswa").onchange = updateHint;
         updateHint();
       },
       preConfirm: () => {
-        const siswaId = document.getElementById("f_siswa").value;
+        const siswaId = siswaIdLocked;
         const jenis = document.getElementById("f_jenis").value;
         const jumlah = Number(document.getElementById("f_jml").value);
         const tanggal = document.getElementById("f_tgl").value;
         const keterangan = document.getElementById("f_ket").value;
         if(!jumlah || jumlah <= 0){ Swal.showValidationMessage("Jumlah harus lebih dari 0"); return false; }
-        const saldoSaatIni = computeBalance(allRows, siswaId);
-        if(jenis === "Penarikan" && jumlah > saldoSaatIni){
-          Swal.showValidationMessage(`Saldo tidak cukup. Saldo saat ini: ${Utils.fmtCurrency(saldoSaatIni)}`);
+        if(jenis === "Penarikan" && jumlah > baseBalance){
+          Swal.showValidationMessage(`Saldo tidak cukup. Saldo tersedia: ${Utils.fmtCurrency(baseBalance)}`);
           return false;
         }
-        const saldoSetelah = jenis === "Setoran" ? saldoSaatIni + jumlah : saldoSaatIni - jumlah;
+        const saldoSetelah = jenis === "Setoran" ? baseBalance + jumlah : baseBalance - jumlah;
         return { siswaId, jenis, jumlah, tanggal, keterangan, saldoSetelah, petugas: Session.get().nama };
       }
     });
     if(!result.isConfirmed) return;
-    await Api.create("tabungan", result.value);
-    Auth.logAudit("CREATE", `${result.value.jenis} tabungan ${Utils.fmtCurrency(result.value.jumlah)} — ${Cache.siswaName(result.value.siswaId)}`);
 
-    if(result.value.jenis === "Penarikan" && result.value.saldoSetelah < LOW_BALANCE_THRESHOLD){
+    if(isEdit){
+      await Api.update("tabungan", existingRecord.id, result.value);
+      Auth.logAudit("UPDATE", `Mengubah transaksi tabungan ${Cache.siswaName(result.value.siswaId)}`);
+    }else{
+      await Api.create("tabungan", result.value);
+      Auth.logAudit("CREATE", `${result.value.jenis} tabungan ${Utils.fmtCurrency(result.value.jumlah)} — ${Cache.siswaName(result.value.siswaId)}`);
+    }
+
+    // Re-sync the running balance for every transaction of this student —
+    // essential when editing/back-dating a transaction that isn't the latest.
+    const finalBalance = await recomputeBalances(result.value.siswaId);
+
+    if(result.value.jenis === "Penarikan" && finalBalance < LOW_BALANCE_THRESHOLD){
       await Api.create("notifications", {
         tipe:"Kesehatan", judul:"Saldo tabungan menipis",
-        pesan:`${Cache.siswaName(result.value.siswaId)} — saldo tersisa ${Utils.fmtCurrency(result.value.saldoSetelah)}`,
+        pesan:`${Cache.siswaName(result.value.siswaId)} — saldo tersisa ${Utils.fmtCurrency(finalBalance)}`,
         dibaca:false, waktu:new Date().toISOString(),
       });
       Notif.refreshBadge();
     }
 
-    Utils.toast("success","Transaksi tabungan disimpan");
+    Utils.toast("success", isEdit ? "Perubahan transaksi disimpan" : "Transaksi tabungan disimpan");
     onSaved();
   }
 
-  async function openPassbook(siswaId, allRows){
+  async function openPassbook(siswaId, refreshOuter){
+    const allRows = await Api.list("tabungan");
     const s = Cache.siswaObj(siswaId);
     const history = allRows.filter(r=>r.siswaId===siswaId).sort((a,b)=>a.tanggal.localeCompare(b.tanggal));
     const saldo = computeBalance(allRows, siswaId);
@@ -186,7 +222,7 @@
       </div>
       <div class="table-responsive" style="max-height:340px;overflow-y:auto">
         <table class="table table-sm">
-          <thead><tr><th style="width:36px">No</th><th>Tanggal</th><th>Jenis</th><th>Keterangan</th><th class="text-end">Jumlah</th><th class="text-end">Saldo</th></tr></thead>
+          <thead><tr><th style="width:36px">No</th><th>Tanggal</th><th>Jenis</th><th>Keterangan</th><th class="text-end">Jumlah</th><th class="text-end">Saldo</th><th></th></tr></thead>
           <tbody>
             ${history.map((h,i)=>`<tr>
               <td>${i+1}</td>
@@ -195,21 +231,44 @@
               <td>${Utils.escapeHtml(h.keterangan||'-')}</td>
               <td class="text-end">${h.jenis==='Setoran'?'+':'-'} ${Utils.fmtCurrency(h.jumlah)}</td>
               <td class="text-end">${Utils.fmtCurrency(h.saldoSetelah)}</td>
-            </tr>`).join("") || `<tr><td colspan="6" class="text-center text-muted py-3">Belum ada transaksi</td></tr>`}
+              <td class="text-nowrap">
+                <button class="btn btn-sm btn-soft-info py-0 px-2 me-1" data-edit-id="${h.id}"><i class="fa-solid fa-pen" style="font-size:10px"></i></button>
+                <button class="btn btn-sm btn-soft-danger py-0 px-2" data-del-id="${h.id}"><i class="fa-solid fa-trash" style="font-size:10px"></i></button>
+              </td>
+            </tr>`).join("") || `<tr><td colspan="7" class="text-center text-muted py-3">Belum ada transaksi</td></tr>`}
           </tbody>
         </table>
       </div>
     </div>`;
 
-    await Swal.fire({
-      title:"Buku Tabungan", html, width:640, confirmButtonColor:"#0a2540",
+    const result = await Swal.fire({
+      title:"Buku Tabungan", html, width:680, confirmButtonColor:"#0a2540",
       showDenyButton:true, confirmButtonText:"Tutup", denyButtonText:'<i class="fa-solid fa-print me-1"></i>Cetak PDF',
-    }).then(r => {
-      if(r.isDenied){
-        Reports.exportPdf(`Buku Tabungan - ${s.nama}`, ["Tanggal","Jenis","Keterangan","Jumlah","Saldo"],
-          history.map(h=>[Utils.fmtDate(h.tanggal), h.jenis, h.keterangan||"-", Utils.fmtCurrency(h.jumlah), Utils.fmtCurrency(h.saldoSetelah)]));
+      didOpen: () => {
+        document.querySelectorAll("[data-edit-id]").forEach(btn=>{
+          btn.onclick = async () => {
+            const rec = history.find(h=>h.id===btn.dataset.editId);
+            await openTxForm(siswaId, rec, async () => { await refreshOuter(); openPassbook(siswaId, refreshOuter); });
+          };
+        });
+        document.querySelectorAll("[data-del-id]").forEach(btn=>{
+          btn.onclick = async () => {
+            const ok = await Utils.confirmDelete("transaksi ini");
+            if(!ok) return;
+            await Api.remove("tabungan", btn.dataset.delId);
+            await recomputeBalances(siswaId);
+            Auth.logAudit("DELETE", `Menghapus transaksi tabungan ${s.nama}`);
+            Utils.toast("success","Transaksi dihapus, saldo diperbarui");
+            await refreshOuter();
+            openPassbook(siswaId, refreshOuter);
+          };
+        });
       }
     });
+    if(result.isDenied){
+      Reports.exportPdf(`Buku Tabungan - ${s.nama}`, ["Tanggal","Jenis","Keterangan","Jumlah","Saldo"],
+        history.map(h=>[Utils.fmtDate(h.tanggal), h.jenis, h.keterangan||"-", Utils.fmtCurrency(h.jumlah), Utils.fmtCurrency(h.saldoSetelah)]));
+    }
   }
 
   Router.register("tabungan", render);

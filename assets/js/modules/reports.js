@@ -69,6 +69,7 @@ const Reports = (() => {
       let ketuaIds = []; try{ ketuaIds = JSON.parse(r.ketuaKamarIds||"[]"); }catch(e){}
       return [c.kamarName(r.kamarId), r.putaranKe, Utils.fmtDate(r.tanggalMulai), ketuaIds.map(id=>c.siswaName(id)).join(", ") || "-"];
     } },
+    { id:"jurnal_mengajar", label:"Jurnal Mengajar", dynamic:true },
   ];
 
   async function renderPage(container){
@@ -85,7 +86,7 @@ const Reports = (() => {
               ${REPORT_TYPES.map(r=>`<option value="${r.id}">${r.label}</option>`).join("")}
             </select>
           </div>
-          <div class="col-md-3">
+          <div class="col-md-3" id="repSiswaWrap">
             <label class="form-label-mbms">Filter Siswa (opsional)</label>
             <select id="repSiswa" class="form-select form-control-mbms" style="padding-left:16px"><option value="">Semua Siswa</option>
               ${Cache.allSiswa().map(s=>`<option value="${s.id}">${s.nama}</option>`).join("")}</select>
@@ -120,10 +121,63 @@ const Reports = (() => {
 
     let currentRows = [], currentDef = REPORT_TYPES[0], repDt = null;
 
+    function renderReportTable(){
+      if(repDt){ repDt.destroy(); repDt = null; }
+      document.querySelector("#repTable thead").innerHTML = `<tr><th style="width:48px">No</th>${currentDef.cols.map(c=>`<th>${c}</th>`).join("")}</tr>`;
+      document.querySelector("#repTable tbody").innerHTML = currentRows.map(row=>`<tr><td></td>${row.map(v=>`<td>${v}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${currentDef.cols.length+1}" class="text-center text-muted py-4">Tidak ada data pada filter ini</td></tr>`;
+      if(currentRows.length){
+        repDt = $("#repTable").DataTable({ pageLength:10, columnDefs:[TableUtil.numberColumnDef(0)], language:{search:"Cari:",zeroRecords:"Data tidak ditemukan"}, destroy:true });
+      }
+    }
+
+    async function loadJurnalReport(){
+      const fields = (await Api.list("jurnal_fields")).sort((a,b)=>Number(a.urutan)-Number(b.urutan));
+      if(!fields.length){
+        currentDef = { id:"jurnal_mengajar", label:"Jurnal Mengajar", cols:["Info"] };
+        currentRows = [["Belum ada kolom jurnal dikonfigurasi — atur di menu Jurnal Mengajar terlebih dahulu."]];
+        renderReportTable();
+        return;
+      }
+      const entries = await Api.list("jurnal_mengajar");
+      const from = document.getElementById("repFrom").value;
+      const to = document.getElementById("repTo").value;
+      const dateField = fields.find(f=>f.type==="date");
+
+      const parse = (e) => { try{ return JSON.parse(e.data||"{}"); }catch(err){ return {}; } };
+      let filtered = entries;
+      if(dateField && (from || to)){
+        filtered = filtered.filter(e=>{
+          const val = parse(e)[dateField.id] || "";
+          if(from && val < from) return false;
+          if(to && val > to) return false;
+          return true;
+        });
+      }
+
+      currentDef = {
+        id:"jurnal_mengajar", label:"Jurnal Mengajar",
+        cols: fields.map(f=>f.label),
+      };
+      currentRows = filtered.map(e => {
+        const data = parse(e);
+        return fields.map(f => f.type==="date" ? Utils.fmtDate(data[f.id]) : (data[f.id] || "-"));
+      });
+      renderReportTable();
+    }
+
     async function loadReport(){
       const typeId = document.getElementById("repType").value;
       currentDef = REPORT_TYPES.find(r=>r.id===typeId);
       document.getElementById("repTitle").textContent = currentDef.label;
+
+      // "Filter Siswa" doesn't apply to Jurnal Mengajar (it's per-session, not per-student)
+      document.getElementById("repSiswaWrap").style.display = currentDef.dynamic ? "none" : "";
+
+      if(currentDef.dynamic){
+        await loadJurnalReport();
+        return;
+      }
+
       let data = await Api.list(typeId);
       const siswaFilter = document.getElementById("repSiswa").value;
       const from = document.getElementById("repFrom").value;
@@ -133,12 +187,7 @@ const Reports = (() => {
       if(to) data = data.filter(r=> (r.tanggal||r.tglKeluar||"") <= to);
 
       currentRows = data.map(r => currentDef.map(r, Cache));
-      if(repDt){ repDt.destroy(); repDt = null; }
-      document.querySelector("#repTable thead").innerHTML = `<tr><th style="width:48px">No</th>${currentDef.cols.map(c=>`<th>${c}</th>`).join("")}</tr>`;
-      document.querySelector("#repTable tbody").innerHTML = currentRows.map(row=>`<tr><td></td>${row.map(v=>`<td>${v}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${currentDef.cols.length+1}" class="text-center text-muted py-4">Tidak ada data pada filter ini</td></tr>`;
-      if(currentRows.length){
-        repDt = $("#repTable").DataTable({ pageLength:10, columnDefs:[TableUtil.numberColumnDef(0)], language:{search:"Cari:",zeroRecords:"Data tidak ditemukan"}, destroy:true });
-      }
+      renderReportTable();
     }
 
     document.getElementById("btnFilterRep").onclick = loadReport;

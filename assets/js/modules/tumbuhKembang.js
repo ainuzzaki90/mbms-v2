@@ -95,7 +95,7 @@
       }).join("") || `<tr><td colspan="9" class="text-center text-muted py-4">Belum ada data siswa</td></tr>`;
 
       document.querySelectorAll("#tkTable [data-act]").forEach(btn=>{
-        btn.onclick = () => openHistory(btn.dataset.id, data);
+        btn.onclick = () => openHistory(btn.dataset.id, reload);
       });
       dt = null;
       if(list.length){
@@ -103,25 +103,26 @@
       }
     }
 
-    document.getElementById("btnAddMeasure").onclick = () => openForm(null, async ()=>{ await reload(); });
+    document.getElementById("btnAddMeasure").onclick = () => openForm(null, null, reload);
     reload();
   }
 
-  async function openForm(preSelectSiswaId, onSaved){
+  async function openForm(preSelectSiswaId, existingRecord, onSaved){
+    const isEdit = !!existingRecord;
     const result = await Swal.fire({
-      title:"Catat Pengukuran Fisik", width:520, showCancelButton:true,
-      confirmButtonColor:"#0a2540", confirmButtonText:"Simpan", cancelButtonText:"Batal",
+      title: isEdit ? "Edit Pengukuran Fisik" : "Catat Pengukuran Fisik", width:520, showCancelButton:true,
+      confirmButtonColor:"#0a2540", confirmButtonText: isEdit ? "Simpan Perubahan" : "Simpan", cancelButtonText:"Batal",
       html:`<div class="row g-3 text-start">
         <div class="col-12"><label class="form-label-mbms">Siswa</label>
-          <select id="f_siswa" class="form-select form-control-mbms" style="padding-left:16px">
-          ${Cache.allSiswa().map(s=>`<option value="${s.id}" ${preSelectSiswaId===s.id?'selected':''}>${s.nama} (${s.kelas})</option>`).join("")}
+          <select id="f_siswa" class="form-select form-control-mbms" style="padding-left:16px" ${isEdit?'disabled':''}>
+          ${Cache.allSiswa().map(s=>`<option value="${s.id}" ${(existingRecord?.siswaId||preSelectSiswaId)===s.id?'selected':''}>${s.nama} (${s.kelas})</option>`).join("")}
           </select></div>
-        <div class="col-6"><label class="form-label-mbms">Tanggal Ukur</label><input type="date" id="f_tgl" class="form-control form-control-mbms" style="padding-left:16px" value="${luxon.DateTime.now().toISODate()}"></div>
+        <div class="col-6"><label class="form-label-mbms">Tanggal Ukur</label><input type="date" id="f_tgl" class="form-control form-control-mbms" style="padding-left:16px" value="${existingRecord?.tanggal || luxon.DateTime.now().toISODate()}"></div>
         <div class="col-6"><label class="form-label-mbms">&nbsp;</label>
           <div id="bmiPreview" class="form-control form-control-mbms d-flex align-items-center" style="padding-left:16px;background:var(--bg);color:var(--muted);font-size:12.5px">IMT: -</div></div>
-        <div class="col-6"><label class="form-label-mbms">Tinggi Badan (cm)</label><input type="number" step="0.1" id="f_tinggi" class="form-control form-control-mbms" style="padding-left:16px"></div>
-        <div class="col-6"><label class="form-label-mbms">Berat Badan (kg)</label><input type="number" step="0.1" id="f_berat" class="form-control form-control-mbms" style="padding-left:16px"></div>
-        <div class="col-12"><label class="form-label-mbms">Catatan (opsional)</label><input id="f_catatan" class="form-control form-control-mbms" style="padding-left:16px" placeholder="mis. kondisi umum, keluhan, dsb"></div>
+        <div class="col-6"><label class="form-label-mbms">Tinggi Badan (cm)</label><input type="number" step="0.1" id="f_tinggi" class="form-control form-control-mbms" style="padding-left:16px" value="${existingRecord?.tinggiBadan||''}"></div>
+        <div class="col-6"><label class="form-label-mbms">Berat Badan (kg)</label><input type="number" step="0.1" id="f_berat" class="form-control form-control-mbms" style="padding-left:16px" value="${existingRecord?.beratBadan||''}"></div>
+        <div class="col-12"><label class="form-label-mbms">Catatan (opsional)</label><input id="f_catatan" class="form-control form-control-mbms" style="padding-left:16px" placeholder="mis. kondisi umum, keluhan, dsb" value="${existingRecord?.catatan||''}"></div>
       </div>`,
       didOpen: () => {
         const update = () => {
@@ -131,6 +132,7 @@
         };
         document.getElementById("f_tinggi").oninput = update;
         document.getElementById("f_berat").oninput = update;
+        update();
       },
       preConfirm: () => {
         const siswaId = document.getElementById("f_siswa").value;
@@ -144,28 +146,39 @@
       }
     });
     if(!result.isConfirmed) return;
-    await Api.create("tumbuh_kembang", result.value);
-    Auth.logAudit("CREATE", `Pengukuran fisik ${Cache.siswaName(result.value.siswaId)} — TB:${result.value.tinggiBadan}cm BB:${result.value.beratBadan}kg`);
-    Utils.toast("success","Data pengukuran disimpan");
+    if(isEdit){
+      await Api.update("tumbuh_kembang", existingRecord.id, result.value);
+      Auth.logAudit("UPDATE", `Mengubah pengukuran fisik ${Cache.siswaName(result.value.siswaId)} — TB:${result.value.tinggiBadan}cm BB:${result.value.beratBadan}kg`);
+      Utils.toast("success","Perubahan disimpan");
+    }else{
+      await Api.create("tumbuh_kembang", result.value);
+      Auth.logAudit("CREATE", `Pengukuran fisik ${Cache.siswaName(result.value.siswaId)} — TB:${result.value.tinggiBadan}cm BB:${result.value.beratBadan}kg`);
+      Utils.toast("success","Data pengukuran disimpan");
+    }
     onSaved();
   }
 
-  async function openHistory(siswaId, allRows){
+  async function openHistory(siswaId, refreshOuter){
+    const allRows = await Api.list("tumbuh_kembang");
     const s = Cache.siswaObj(siswaId);
     const history = allRows.filter(r=>r.siswaId===siswaId).sort((a,b)=>a.tanggal.localeCompare(b.tanggal));
 
-    await Swal.fire({
-      title:`Riwayat Tumbuh Kembang — ${s.nama}`, width:680, confirmButtonColor:"#0a2540",
+    const result = await Swal.fire({
+      title:`Riwayat Tumbuh Kembang — ${s.nama}`, width:700, confirmButtonColor:"#0a2540",
       showDenyButton:true, confirmButtonText:"Tutup", denyButtonText:'<i class="fa-solid fa-plus me-1"></i>Catat Baru',
       html:`<div class="text-start">
         <canvas id="chartTumbuhKembang" height="130"></canvas>
         <div class="table-responsive mt-3" style="max-height:220px;overflow-y:auto">
           <table class="table table-sm">
-            <thead><tr><th style="width:36px">No</th><th>Tanggal</th><th>Tinggi</th><th>Berat</th><th>IMT</th><th>Status</th></tr></thead>
+            <thead><tr><th style="width:36px">No</th><th>Tanggal</th><th>Tinggi</th><th>Berat</th><th>IMT</th><th>Status</th><th></th></tr></thead>
             <tbody>
               ${history.map((h,i)=>{ const cat = bmiCategory(h.bmi); return `<tr>
                 <td>${i+1}</td><td>${Utils.fmtDate(h.tanggal)}</td><td>${h.tinggiBadan} cm</td><td>${h.beratBadan} kg</td><td>${h.bmi}</td>
-                <td><span class="badge-mbms ${cat.cls}">${cat.label}</span></td></tr>`; }).join("") || `<tr><td colspan="6" class="text-center text-muted py-3">Belum ada pengukuran</td></tr>`}
+                <td><span class="badge-mbms ${cat.cls}">${cat.label}</span></td>
+                <td class="text-nowrap">
+                  <button class="btn btn-sm btn-soft-info py-0 px-2 me-1" data-edit-id="${h.id}"><i class="fa-solid fa-pen" style="font-size:10px"></i></button>
+                  <button class="btn btn-sm btn-soft-danger py-0 px-2" data-del-id="${h.id}"><i class="fa-solid fa-trash" style="font-size:10px"></i></button>
+                </td></tr>`; }).join("") || `<tr><td colspan="7" class="text-center text-muted py-3">Belum ada pengukuran</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -187,8 +200,26 @@
             }
           }
         });
+        document.querySelectorAll("[data-edit-id]").forEach(btn=>{
+          btn.onclick = async () => {
+            const rec = history.find(h=>h.id===btn.dataset.editId);
+            await openForm(siswaId, rec, async () => { await refreshOuter(); openHistory(siswaId, refreshOuter); });
+          };
+        });
+        document.querySelectorAll("[data-del-id]").forEach(btn=>{
+          btn.onclick = async () => {
+            const ok = await Utils.confirmDelete("data pengukuran ini");
+            if(!ok) return;
+            await Api.remove("tumbuh_kembang", btn.dataset.delId);
+            Auth.logAudit("DELETE", `Menghapus pengukuran fisik ${s.nama}`);
+            Utils.toast("success","Data pengukuran dihapus");
+            await refreshOuter();
+            openHistory(siswaId, refreshOuter);
+          };
+        });
       }
-    }).then(r => { if(r.isDenied) openForm(siswaId, ()=>{}); });
+    });
+    if(result.isDenied) openForm(siswaId, null, async () => { await refreshOuter(); openHistory(siswaId, refreshOuter); });
   }
 
   Router.register("tumbuhkembang", render);
